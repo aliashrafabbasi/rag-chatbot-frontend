@@ -1,9 +1,144 @@
 import { useEffect, useRef, useState } from "react";
+import {
+  isNotInDocumentAnswer,
+  parseErrorDetail,
+  readJsonResponse,
+} from "./api";
+import { API } from "./config";
+
+function uniqueChunks(chunks) {
+  if (!Array.isArray(chunks)) return [];
+  const seen = new Set();
+  return chunks.filter((chunk) => {
+    const key = String(chunk).trim();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function UserMessage({ text }) {
+  return (
+    <div className="animate-message flex gap-3 flex-row-reverse">
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-indigo-600 text-xs font-semibold text-white">
+        You
+      </div>
+      <div className="max-w-[85%] sm:max-w-[75%] rounded-2xl rounded-br-md bg-indigo-600 px-4 py-3 text-[15px] leading-relaxed text-white">
+        {text}
+      </div>
+    </div>
+  );
+}
+
+function BotMessage({ answer, chunks }) {
+  const notInDocument = isNotInDocumentAnswer(answer);
+
+  return (
+    <div className="animate-message flex gap-3 w-full">
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-700 text-xs font-semibold text-slate-300">
+        AI
+      </div>
+      <div className="min-w-0 flex-1 space-y-4">
+        {notInDocument && chunks.length > 0 && (
+          <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+            <p className="font-medium text-amber-200">
+              The model could not answer your question from the document.
+            </p>
+            <p className="mt-1.5 text-amber-100/85 leading-relaxed">
+              Related text was still retrieved below. Try a specific question
+              such as &quot;Summarize this document&quot;, &quot;What skills are
+              listed?&quot;, or &quot;What projects are mentioned?&quot; Avoid
+              questions about details that are not in the PDF (e.g. salary).
+            </p>
+          </div>
+        )}
+
+        <section
+          className={`rounded-2xl rounded-bl-md border bg-slate-800/90 overflow-hidden ${
+            notInDocument
+              ? "border-amber-500/30"
+              : "border-indigo-500/30"
+          }`}
+        >
+          <div
+            className={`border-b border-slate-700/60 px-4 py-2 ${
+              notInDocument ? "bg-amber-500/10" : "bg-indigo-500/10"
+            }`}
+          >
+            <h3
+              className={`text-xs font-semibold uppercase tracking-wider ${
+                notInDocument ? "text-amber-300" : "text-indigo-300"
+              }`}
+            >
+              Answer
+            </h3>
+          </div>
+          <p className="px-4 py-3 text-[15px] leading-relaxed text-slate-100 whitespace-pre-wrap break-words">
+            {answer || "No answer was returned."}
+          </p>
+        </section>
+
+        {chunks.length > 0 && (
+          <section className="rounded-2xl border border-slate-700/50 bg-slate-800/50 overflow-hidden">
+            <div className="border-b border-slate-700/60 px-4 py-2">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+                Retrieved chunks
+              </h3>
+              <p className="mt-0.5 text-xs text-slate-500">
+                {chunks.length} unique passage{chunks.length !== 1 ? "s" : ""}{" "}
+                used for this answer
+              </p>
+            </div>
+            <div className="divide-y divide-slate-700/40">
+              {chunks.map((chunk, idx) => (
+                <details key={idx} className="group" open={idx === 0}>
+                  <summary className="cursor-pointer list-none px-4 py-3 text-sm font-medium text-slate-300 transition hover:bg-slate-700/30 [&::-webkit-details-marker]:hidden">
+                    <span className="flex items-center gap-2">
+                      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-slate-700 text-xs text-indigo-300">
+                        {idx + 1}
+                      </span>
+                      <span className="flex-1 truncate">
+                        Chunk {idx + 1}
+                        <span className="ml-2 font-normal text-slate-500">
+                          ({chunk.length} chars)
+                        </span>
+                      </span>
+                      <svg
+                        className="h-4 w-4 shrink-0 text-slate-500 transition group-open:rotate-180"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                        strokeWidth={2}
+                        aria-hidden
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M19 9l-7 7-7-7"
+                        />
+                      </svg>
+                    </span>
+                  </summary>
+                  <div className="border-t border-slate-700/40 bg-slate-900/40 px-4 py-3">
+                    <p className="text-sm leading-relaxed text-slate-300 whitespace-pre-wrap break-words">
+                      {chunk}
+                    </p>
+                  </div>
+                </details>
+              ))}
+            </div>
+          </section>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function App() {
   const [question, setQuestion] = useState("");
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState(null);
   const [pdfReady, setPdfReady] = useState(false);
   const [sessionComplete, setSessionComplete] = useState(false);
@@ -15,6 +150,7 @@ function App() {
     setMessages([]);
     setQuestion("");
     setLoading(false);
+    setUploading(false);
     setSessionComplete(false);
     setPdfReady(false);
     setUploadStatus(null);
@@ -31,30 +167,44 @@ function App() {
     if (!file) return;
 
     resetSession();
-    setUploadStatus({ type: "loading", text: "Uploading document…" });
+    setUploading(true);
+    setUploadStatus({ type: "loading", text: "Uploading and indexing document…" });
 
     try {
       const formData = new FormData();
       formData.append("file", file);
 
-      await fetch("http://127.0.0.1:8000/upload-pdf", {
+      const res = await fetch(API.uploadPdf, {
         method: "POST",
         body: formData,
       });
 
+      const data = await readJsonResponse(res);
+
+      if (!res.ok) {
+        throw new Error(
+          parseErrorDetail(data, `Upload failed (HTTP ${res.status})`),
+        );
+      }
+
       setPdfReady(true);
       setUploadStatus({
         type: "success",
-        text: `"${file.name}" ready — ask one question below`,
+        text: `"${file.name}" indexed — ask one question below`,
       });
-    } catch {
+    } catch (err) {
+      setPdfReady(false);
       setUploadStatus({
         type: "error",
-        text: "Upload failed. Is the backend running?",
+        text:
+          err instanceof Error
+            ? err.message
+            : "Upload failed. Check the API and try again.",
       });
+    } finally {
+      setUploading(false);
+      e.target.value = "";
     }
-
-    e.target.value = "";
   };
 
   const ask = async () => {
@@ -66,20 +216,36 @@ function App() {
     setLoading(true);
 
     try {
-      const res = await fetch("http://127.0.0.1:8000/ask", {
+      const res = await fetch(API.ask, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question: trimmed }),
       });
 
-      const data = await res.json();
-      setMessages((p) => [...p, { role: "bot", text: data.answer }]);
-    } catch {
+      const data = await readJsonResponse(res);
+
+      if (!res.ok) {
+        throw new Error(parseErrorDetail(data, `Request failed (${res.status})`));
+      }
+
       setMessages((p) => [
         ...p,
         {
           role: "bot",
-          text: "Something went wrong. Please check that the API is running.",
+          answer: data.answer ?? "",
+          chunks: uniqueChunks(data.retrieved_chunks),
+        },
+      ]);
+    } catch (err) {
+      setMessages((p) => [
+        ...p,
+        {
+          role: "bot",
+          answer:
+            err instanceof Error
+              ? err.message
+              : "Something went wrong. Please check that the API is running.",
+          chunks: [],
         },
       ]);
     } finally {
@@ -99,11 +265,11 @@ function App() {
     }
   };
 
-  const canAsk = pdfReady && !sessionComplete && !loading;
+  const canAsk = pdfReady && !sessionComplete && !loading && !uploading;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 flex items-center justify-center p-4 sm:p-6">
-      <div className="w-full max-w-3xl h-[min(92vh,820px)] flex flex-col rounded-2xl border border-slate-700/60 bg-slate-900/70 backdrop-blur-xl shadow-2xl shadow-black/40 overflow-hidden">
+      <div className="w-full max-w-4xl h-[min(92vh,820px)] flex flex-col rounded-2xl border border-slate-700/60 bg-slate-900/70 backdrop-blur-xl shadow-2xl shadow-black/40 overflow-hidden">
         <header className="shrink-0 px-6 py-5 border-b border-slate-700/50 bg-slate-900/50">
           <div className="flex items-center gap-3">
             <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 shadow-lg shadow-indigo-500/25">
@@ -134,11 +300,18 @@ function App() {
         </header>
 
         <div className="shrink-0 px-4 sm:px-6 py-4 border-b border-slate-700/40">
-          <label className="group flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed border-slate-600/80 bg-slate-800/30 px-4 py-5 transition-colors hover:border-indigo-500/50 hover:bg-indigo-500/5">
+          <label
+            className={`group flex flex-col items-center justify-center rounded-xl border-2 border-dashed px-4 py-5 transition-colors ${
+              uploading
+                ? "cursor-wait border-indigo-500/50 bg-indigo-500/10"
+                : "cursor-pointer border-slate-600/80 bg-slate-800/30 hover:border-indigo-500/50 hover:bg-indigo-500/5"
+            }`}
+          >
             <input
               type="file"
               accept=".pdf,application/pdf"
               onChange={uploadPDF}
+              disabled={uploading}
               className="sr-only"
             />
             <svg
@@ -156,7 +329,9 @@ function App() {
               />
             </svg>
             <span className="text-sm font-medium text-slate-300">
-              Drop a PDF here or click to browse
+              {uploading
+                ? "Indexing your PDF on the server…"
+                : "Drop a PDF here or click to browse"}
             </span>
             <span className="mt-1 text-xs text-slate-500">
               One question per document
@@ -180,34 +355,14 @@ function App() {
 
         {showMessageArea ? (
           <div className="messages-scroll flex-1 overflow-y-auto px-4 sm:px-6 py-5">
-            <div className="flex flex-col gap-4">
-              {messages.map((m, i) => (
-                <div
-                  key={i}
-                  className={`animate-message flex gap-3 ${
-                    m.role === "user" ? "flex-row-reverse" : ""
-                  }`}
-                >
-                  <div
-                    className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-xs font-semibold ${
-                      m.role === "user"
-                        ? "bg-indigo-600 text-white"
-                        : "bg-slate-700 text-slate-300"
-                    }`}
-                  >
-                    {m.role === "user" ? "You" : "AI"}
-                  </div>
-                  <div
-                    className={`max-w-[85%] sm:max-w-[75%] rounded-2xl px-4 py-3 text-[15px] leading-relaxed ${
-                      m.role === "user"
-                        ? "bg-indigo-600 text-white rounded-br-md"
-                        : "bg-slate-800 text-slate-100 border border-slate-700/50 rounded-bl-md"
-                    }`}
-                  >
-                    {m.text}
-                  </div>
-                </div>
-              ))}
+            <div className="flex flex-col gap-5">
+              {messages.map((m, i) =>
+                m.role === "user" ? (
+                  <UserMessage key={i} text={m.text} />
+                ) : (
+                  <BotMessage key={i} answer={m.answer} chunks={m.chunks ?? []} />
+                ),
+              )}
 
               {loading && (
                 <div className="animate-message flex gap-3">

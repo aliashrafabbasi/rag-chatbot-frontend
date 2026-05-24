@@ -2,8 +2,8 @@
 
 # RAG Chatbot · Frontend
 
-A modern React interface for **Retrieval-Augmented Generation** over your PDFs.  
-Upload a document, ask one focused question, and read the AI answer — then start fresh with the next file.
+A modern React UI for **Retrieval-Augmented Generation** over PDFs.  
+Connects to your deployed API, indexes documents on upload, and shows the full answer plus retrieved source chunks.
 
 <br />
 
@@ -11,22 +11,35 @@ Upload a document, ask one focused question, and read the AI answer — then sta
 ![Vite](https://img.shields.io/badge/Vite-8-646CFF?style=for-the-badge&logo=vite&logoColor=white)
 ![Tailwind CSS](https://img.shields.io/badge/Tailwind-4-38B2AC?style=for-the-badge&logo=tailwind-css&logoColor=white)
 
+**Live API:** [aliashrafabbasi-rag-chatbot.hf.space](https://aliashrafabbasi-rag-chatbot.hf.space/)
+
 </div>
 
 ---
 
 ## Overview
 
-This app is the **client** for a RAG backend. It does not run embeddings or LLM inference itself — it talks to a local API that indexes PDFs and answers questions from that context.
+This repository is the **frontend only**. It does not run embeddings or LLM inference — it calls your RAG backend to upload PDFs and answer questions.
 
-The experience is intentionally simple:
+**Default backend:** `https://aliashrafabbasi-rag-chatbot.hf.space`
 
-1. **Upload** a PDF → the backend indexes it  
-2. **Ask** exactly **one** question about that document  
-3. **Read** the answer in the chat area  
-4. **Upload another PDF** → the screen resets and you can ask one new question  
+### User flow
 
-There is no chat history across documents. Each upload is a clean session.
+1. **Upload** a PDF → backend indexes it (upload must succeed before you can ask)
+2. **Ask** exactly **one** question about that document
+3. **Review** the answer and expandable **retrieved chunks** used by RAG
+4. **Upload another PDF** → UI resets completely for a new session
+
+There is no chat history across documents. Each upload starts fresh.
+
+```mermaid
+flowchart LR
+  A[Upload PDF] --> B[Backend indexes]
+  B --> C[Ask one question]
+  C --> D[Answer + chunks]
+  D --> E[Upload new PDF]
+  E --> A
+```
 
 ---
 
@@ -34,64 +47,116 @@ There is no chat history across documents. Each upload is a clean session.
 
 | Feature | Description |
 |--------|-------------|
-| **PDF upload** | Drag-and-drop or click to browse; sends the file to `/upload-pdf` |
-| **One question per document** | Input locks after a single Q&A so each PDF gets one focused query |
-| **Session reset on upload** | Choosing a new file clears messages and state — like opening the app fresh |
-| **Live chat UI** | User and AI bubbles, typing indicator, auto-scroll |
-| **Responsive layout** | Centered card layout that works on mobile and desktop |
-| **Error handling** | Clear feedback if the backend is unreachable |
+| **Deployed API** | Points at Hugging Face Space by default; override with `VITE_API_URL` |
+| **PDF upload** | Drag-and-drop; validates HTTP response before enabling questions |
+| **One question per PDF** | Input locks after a single Q&A per document |
+| **Full RAG response** | Shows `answer` and deduplicated `retrieved_chunks` |
+| **Chunk viewer** | Expandable passages with character counts |
+| **Session reset on upload** | New file clears messages and state immediately |
+| **“Not in document” hints** | Explains when the API cannot answer despite retrieved text |
+| **Error handling** | Upload/ask errors surface API messages when available |
 
 ---
 
-## How it works
+## API contract
 
-```mermaid
-flowchart LR
-  A[Upload PDF] --> B[Backend indexes document]
-  B --> C[Ask one question]
-  C --> D[AI answer displayed]
-  D --> E[Upload new PDF]
-  E --> A
+| Method | Endpoint | Request | Response |
+|--------|----------|---------|----------|
+| `POST` | `/upload-pdf` | `multipart/form-data`, field `file` | Success HTTP 2xx |
+| `POST` | `/ask` | `{ "question": "..." }` | See below |
+
+**`/ask` response (JSON):**
+
+```json
+{
+  "question": "What skills are listed?",
+  "answer": "The document lists Python, FastAPI, LangChain, ...",
+  "retrieved_chunks": ["passage 1...", "passage 2..."]
+}
 ```
 
-When you select a new file, the frontend calls `resetSession()` **before** the upload request, so the UI is cleared immediately. Messages and input only return after a successful upload and your next question.
-
----
-
-## Prerequisites
-
-- **Node.js** 18+ (20+ recommended)
-- **npm** (or pnpm / yarn)
-- A running **RAG backend** on `http://127.0.0.1:8000` with these endpoints:
-
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| `POST` | `/upload-pdf` | `multipart/form-data` with field `file` |
-| `POST` | `/ask` | JSON body `{ "question": "..." }` → `{ "answer": "..." }` |
-
-> The API base URL is currently hardcoded in `src/App.jsx`. Point it at your backend host if you deploy elsewhere.
+The UI reads `answer` and `retrieved_chunks`. Duplicate chunks from the API are shown once.
 
 ---
 
 ## Quick start
 
 ```bash
-# Clone and enter the project
+git clone <your-repo-url>
 cd rag-chatbot-frontend
 
-# Install dependencies
 npm install
-
-# Start the dev server (default: http://localhost:5173)
+cp .env.example .env   # optional — defaults already point at HF Space
 npm run dev
 ```
 
-Make sure your backend is running on port **8000**, then:
+Open **http://localhost:5173**, then:
 
-1. Open the app in the browser  
-2. Upload a PDF  
-3. Type your question and press **Enter** or click **Send**  
-4. Upload another PDF when you want to ask about a different document  
+1. Upload a PDF and wait for **“indexed”** (not just the file picker closing)
+2. Ask one specific question, e.g. *“Summarize this document”* or *“What skills are listed?”*
+3. Expand **Retrieved chunks** to inspect source passages
+4. Upload a new PDF to start over
+
+---
+
+## Configuration
+
+### Backend URL
+
+`.env` (or copy from `.env.example`):
+
+```env
+VITE_API_URL=https://aliashrafabbasi-rag-chatbot.hf.space
+```
+
+**Local backend:**
+
+```env
+VITE_API_URL=http://127.0.0.1:8000
+```
+
+Restart the dev server after changing `.env`. URLs are built in `src/config.js`:
+
+```js
+API.uploadPdf  // {VITE_API_URL}/upload-pdf
+API.ask        // {VITE_API_URL}/ask
+```
+
+### CORS
+
+If the frontend and API are on different domains (e.g. Netlify + Hugging Face), enable CORS on your FastAPI app for:
+
+- `http://localhost:5173` (local dev)
+- Your deployed frontend origin
+
+---
+
+## Troubleshooting
+
+### Answer says **“Not in document”** but chunks are shown
+
+This text comes from the **backend**, not the frontend. The model returns it when it decides your question cannot be answered from the retrieved passages (e.g. asking about salary when the resume has no salary).
+
+**Try questions that match the PDF content:**
+
+- `Summarize this document`
+- `What skills are listed?`
+- `What projects are mentioned?`
+- `Who is this document about?`
+
+Vague or off-topic questions often trigger **Not in document** even when related chunks appear.
+
+### Upload seems to work but answers are wrong
+
+The app only enables questions after a **successful** upload (`HTTP 2xx`). If indexing failed, you should see a red error under the upload area. Re-upload and wait for the green **indexed** message.
+
+### Network / CORS errors
+
+Check the browser **Network** tab. Failed uploads or `ask` requests often show CORS or connection errors. Fix CORS on the API or verify `VITE_API_URL` has no trailing slash.
+
+### Hugging Face Space cold starts
+
+The first request after idle can be slow. Wait for upload indexing to finish before asking.
 
 ---
 
@@ -99,9 +164,9 @@ Make sure your backend is running on port **8000**, then:
 
 | Command | Description |
 |---------|-------------|
-| `npm run dev` | Start Vite dev server with hot reload |
+| `npm run dev` | Dev server at `http://localhost:5173` |
 | `npm run build` | Production build → `dist/` |
-| `npm run preview` | Serve the production build locally |
+| `npm run preview` | Preview production build locally |
 | `npm run lint` | Run ESLint |
 
 ---
@@ -110,13 +175,16 @@ Make sure your backend is running on port **8000**, then:
 
 ```
 rag-chatbot-frontend/
-├── public/              # Static assets
+├── .env.example           # Example environment variables
+├── public/
 ├── src/
-│   ├── App.jsx          # Main UI + API calls
-│   ├── index.css        # Tailwind + custom animations
-│   └── main.jsx         # React entry point
+│   ├── App.jsx            # Main UI, upload & ask flows
+│   ├── api.js             # Response parsing, error helpers
+│   ├── config.js          # API base URL & endpoints
+│   ├── index.css          # Tailwind + animations
+│   └── main.jsx           # Entry point
 ├── index.html
-├── vite.config.js       # Vite + Tailwind plugin
+├── vite.config.js
 └── package.json
 ```
 
@@ -124,29 +192,10 @@ rag-chatbot-frontend/
 
 ## Tech stack
 
-- **[React 19](https://react.dev/)** — UI components and state  
-- **[Vite 8](https://vite.dev/)** — dev server and bundling  
-- **[Tailwind CSS 4](https://tailwindcss.com/)** — styling via `@tailwindcss/vite`  
-- **[DM Sans](https://fonts.google.com/specimen/DM+Sans)** — typography (loaded in `index.html`)
-
----
-
-## Configuration
-
-### Backend URL
-
-Update the fetch URLs in `src/App.jsx` if your API is not on `127.0.0.1:8000`:
-
-```js
-await fetch("http://127.0.0.1:8000/upload-pdf", { ... });
-await fetch("http://127.0.0.1:8000/ask", { ... });
-```
-
-For production, consider environment variables (e.g. `VITE_API_URL`) and a Vite proxy during development.
-
-### CORS
-
-If the frontend and backend run on different origins, ensure your API allows the Vite dev origin (typically `http://localhost:5173`).
+- [React 19](https://react.dev/)
+- [Vite 8](https://vite.dev/)
+- [Tailwind CSS 4](https://tailwindcss.com/) via `@tailwindcss/vite`
+- [DM Sans](https://fonts.google.com/specimen/DM+Sans) (Google Fonts in `index.html`)
 
 ---
 
@@ -154,21 +203,29 @@ If the frontend and backend run on different origins, ensure your API allows the
 
 ```bash
 npm run build
-npm run preview
 ```
 
-Deploy the contents of `dist/` to any static host (Vercel, Netlify, S3, etc.). Remember to set the correct API URL for your deployed backend.
+Deploy the `dist/` folder to Netlify, Vercel, GitHub Pages, etc.
+
+Set `VITE_API_URL` in your host’s build environment if it differs from the default Hugging Face Space URL. If unset, `src/config.js` falls back to `https://aliashrafabbasi-rag-chatbot.hf.space`.
+
+```bash
+npm run preview   # test the build locally
+```
 
 ---
 
-## License
+## Related
 
-This project is private (`"private": true` in `package.json`). Add a license file if you plan to open-source it.
+| Resource | URL |
+|----------|-----|
+| RAG API (default) | https://aliashrafabbasi-rag-chatbot.hf.space/ |
+| API docs (Swagger) | https://aliashrafabbasi-rag-chatbot.hf.space/docs |
 
 ---
 
 <div align="center">
 
-**Built for focused, document-by-document Q&A.**
+**One PDF · one question · full answer and source chunks.**
 
 </div>
